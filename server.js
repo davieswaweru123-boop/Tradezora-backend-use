@@ -290,7 +290,7 @@ app.post("/api/trading/proposal", async (req,res) => {
     if(!Number.isFinite(stake)||stake<=0)return res.status(400).json({error:"Stake must be greater than zero."});
     if(!Number.isFinite(dur)||dur<=0)return res.status(400).json({error:"Duration must be greater than zero."});
     const type=String(contract_type).toUpperCase();
-    if(!new Set(["CALL","PUT"]).has(type))return res.status(400).json({error:"This demo version supports Rise and Fall contracts only."});
+    if(!new Set(["CALL","PUT","DIGITOVER","DIGITUNDER"]).has(type))return res.status(400).json({error:"This demo contract type is not supported."});
     const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
     const result=await sendTradingRequest(entry,{
       proposal:1,amount:stake,basis:"stake",contract_type:type,currency:demo.currency||"USD",
