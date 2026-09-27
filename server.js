@@ -301,15 +301,6 @@ const proposalRequest={
   duration_unit:duration_unit||"s",
   underlying_symbol:String(underlying_symbol)
 };
-
-if(type==="DIGITOVER" || type==="DIGITUNDER"){
-  const digit=Number(barrier);
-  if(!Number.isInteger(digit) || digit<0 || digit>9){
-    return res.status(400).json({error:"Barrier must be a digit from 0 to 9."});
-  }
-  proposalRequest.barrier=digit;
-}
-
 app.post("/api/trading/proposal", async (req,res) => {
   const auth=requireSession(req,res); if(!auth)return;
 
