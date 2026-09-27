@@ -293,7 +293,7 @@ app.post("/api/trading/proposal", async (req,res) => {
     const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
     const result=await sendTradingRequest(entry,{
       proposal:1,amount:stake,basis:"stake",contract_type:type,currency:demo.currency||"USD",
-      duration:dur,duration_unit:duration_unit||"s",underlying_symbol:String(underlying_symbol),subscribe:0
+      duration:dur,duration_unit:duration_unit||"s",underlying_symbol:String(underlying_symbol)
     });
     res.json({success:true,proposal:result.proposal||null});
   } catch(err) {
@@ -328,7 +328,7 @@ app.post("/api/trading/open-contract", async (req,res) => {
     const contract_id=String(req.body?.contract_id||"").trim();
     if(!contract_id)return res.status(400).json({error:"Contract ID is required."});
     const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const result=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id,subscribe:0});
+    const result=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id});
     res.json({success:true,contract:result.proposal_open_contract||null});
   } catch(err) {
     console.error("Open contract error:",err);
@@ -348,4 +348,4 @@ app.listen(PORT,()=> {
   console.log(`CORS allowed origin: ${FRONTEND_ORIGIN}`);
   console.log("Demo trading endpoints are enabled.");
 });
-      
+    
