@@ -310,15 +310,13 @@ if(type==="DIGITOVER" || type==="DIGITUNDER"){
   proposalRequest.barrier=digit;
 }
 
-const result=await sendTradingRequest(entry,proposalRequest);
-  proposalRequest.barrier=digit;
+proposalRequest.barrier=digit;
 }
 
 const result=await sendTradingRequest(entry,proposalRequest);
 
 res.json({success:true,proposal:result.proposal||null});
-      
-    
+} catch(err) {
     res.json({success:true,proposal:result.proposal||null});
   } catch(err) {
     console.error("Proposal error:",err);
