@@ -345,4 +345,162 @@ app.post("/api/trading/proposal", async (req,res) => {
     });
   }
 });
+app.post("/api/trading/buy", async (req,res) => {
+  const auth=requireSession(req,res); if(!auth)return;
 
+  try {
+    const demo=await getDemoAccount(auth.session);
+    if(!demo?.account_id)
+      return res.status(400).json({error:"No demo account available."});
+
+    const {proposal_id,price}=req.body||{};
+    if(!proposal_id)
+      return res.status(400).json({error:"Proposal ID is required."});
+
+    const buyPrice=Number(price);
+    if(!Number.isFinite(buyPrice)||buyPrice<=0)
+      return res.status(400).json({error:"A valid buy price is required."});
+
+    const entry=await getTradingSocket(
+      auth.sessionId,
+      auth.session,
+      demo.account_id
+    );
+
+    const result=await sendTradingRequest(entry,{
+      buy:proposal_id,
+      price:buyPrice
+    });
+
+    const buy=result.buy||{};
+    const contractId=buy.contract_id;
+
+    if(!contractId)
+      return res.status(502).json({error:"Deriv did not return a contract ID."});
+
+    const history=tradeHistories.get(auth.sessionId)||[];
+
+    history.unshift({
+      contract_id:contractId,
+      proposal_id,
+      symbol:buy.longcode||buy.underlying_symbol||null,
+      direction:buy.contract_type||null,
+      stake:buy.buy_price??buyPrice,
+      payout:null,
+      profit:null,
+      status:"OPEN",
+      result:"OPEN",
+      created_at:new Date().toISOString()
+    });
+
+    tradeHistories.set(auth.sessionId,history.slice(0,50));
+
+    res.json({
+      success:true,
+      buy,
+      contract_id:contractId
+    });
+
+  } catch(err) {
+    console.error("Buy error:",err);
+    res.status(502).json({
+      error:err.message||"Could not place the demo trade."
+    });
+  }
+});
+
+
+app.get("/api/trading/open-contract", async (req,res) => {
+  const auth=requireSession(req,res); if(!auth)return;
+
+  try {
+    const contractId=String(req.query.contract_id||"").trim();
+
+    if(!contractId)
+      return res.status(400).json({error:"Contract ID is required."});
+
+    const demo=await getDemoAccount(auth.session);
+    if(!demo?.account_id)
+      return res.status(400).json({error:"No demo account available."});
+
+    const entry=await getTradingSocket(
+      auth.sessionId,
+      auth.session,
+      demo.account_id
+    );
+
+    const result=await sendTradingRequest(entry,{
+      proposal_open_contract:1,
+      contract_id:Number(contractId),
+      subscribe:0
+    });
+
+    const contract=result.proposal_open_contract||null;
+
+    if(contract){
+      const history=tradeHistories.get(auth.sessionId)||[];
+      const item=history.find(x=>String(x.contract_id)===String(contractId));
+
+      if(item){
+        item.status=contract.is_sold ? "CLOSED" : "OPEN";
+        item.result=contract.is_sold
+          ? (Number(contract.profit)>=0 ? "WIN" : "LOSS")
+          : "OPEN";
+        item.payout=contract.payout??null;
+        item.profit=contract.profit??null;
+        item.sell_price=contract.sell_price??null;
+        item.exit_tick=contract.exit_tick??null;
+        item.closed_at=contract.date_expiry
+          ? new Date(Number(contract.date_expiry)*1000).toISOString()
+          : null;
+      }
+
+      tradeHistories.set(auth.sessionId,history.slice(0,50));
+    }
+
+    res.json({
+      success:true,
+      contract
+    });
+
+  } catch(err) {
+    console.error("Open contract error:",err);
+    res.status(502).json({
+      error:err.message||"Could not load the open contract."
+    });
+  }
+});
+
+
+app.get("/api/trading/history", (req,res) => {
+  const auth=requireSession(req,res); if(!auth)return;
+
+  const history=tradeHistories.get(auth.sessionId)||[];
+
+  res.json({
+    success:true,
+    history
+  });
+});
+
+
+app.post("/api/trading/disconnect", (req,res) => {
+  const auth=requireSession(req,res); if(!auth)return;
+
+  const entry=tradingSockets.get(auth.sessionId);
+
+  if(entry){
+    try { entry.ws.close(); } catch {}
+    tradingSockets.delete(auth.sessionId);
+  }
+
+  res.json({
+    success:true,
+    disconnected:true
+  });
+});
+
+
+app.listen(PORT, () => {
+  console.log(`TradeZora backend running on port ${PORT}`);
+});
