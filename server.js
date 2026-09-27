@@ -13,6 +13,8 @@ const FRONTEND_URL =
   process.env.FRONTEND_URL ||
   "https://davieswaweru123-boop.github.io/Tradezora-/";
 
+const FRONTEND_ORIGIN = new URL(FRONTEND_URL).origin;
+
 const oauthSessions = new Map();
 const userSessions = new Map();
 const connectionCodes = new Map();
@@ -43,12 +45,12 @@ function stateValue() {
 }
 
 function addCors(res) {
-  res.setHeader(
-    "Access-Control-Allow-Origin",
-    FRONTEND_URL.replace(/\/$/, "")
-  );
+  res.setHeader("Access-Control-Allow-Origin", FRONTEND_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-TradeZora-Session");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-TradeZora-Session"
+  );
 }
 
 app.use((req, res, next) => {
@@ -199,6 +201,8 @@ app.post("/api/session/exchange", (req, res) => {
     });
   }
 
+  console.log("TradeZora session exchanged successfully.");
+
   return res.json({
     session_id: item.sessionId,
     expires_at: session.expiresAt
@@ -252,6 +256,12 @@ app.get("/api/account", async (req, res) => {
 
     const selected = demo || accounts[0] || null;
 
+    console.log(
+      "TradeZora account loaded:",
+      selected?.account_id || "no account",
+      selected?.account_type || "unknown"
+    );
+
     return res.json({
       success: true,
       accounts,
@@ -272,4 +282,5 @@ app.get("/api/account", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`TradeZora backend running on port ${PORT}`);
+  console.log(`CORS allowed origin: ${FRONTEND_ORIGIN}`);
 });
