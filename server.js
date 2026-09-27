@@ -284,7 +284,7 @@ app.post("/api/trading/proposal", async (req,res) => {
   try {
     const demo=await getDemoAccount(auth.session);
     if(!demo?.account_id)return res.status(400).json({error:"No demo account available."});
-    const {underlying_symbol,contract_type,amount,duration,duration_unit}=req.body||{};
+    const {underlying_symbol,contract_type,amount,duration,duration_unit,barrier}=req.body||{};
     const stake=Number(amount), dur=Number(duration);
     if(!underlying_symbol||!contract_type)return res.status(400).json({error:"Symbol and contract type are required."});
     if(!Number.isFinite(stake)||stake<=0)return res.status(400).json({error:"Stake must be greater than zero."});
