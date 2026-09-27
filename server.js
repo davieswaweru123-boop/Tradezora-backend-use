@@ -291,13 +291,26 @@ app.post("/api/trading/proposal", async (req,res) => {
     if(!Number.isFinite(dur)||dur<=0)return res.status(400).json({error:"Duration must be greater than zero."});
     const type=String(contract_type).toUpperCase();
     if(!new Set(["CALL","PUT","DIGITOVER","DIGITUNDER"]).has(type))return res.status(400).json({error:"This demo contract type is not supported."});
-    const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const result=await sendTradingRequest(entry,{
-      const proposalRequest={
+const proposalRequest={
   proposal:1,
   amount:stake,
   basis:"stake",
   contract_type:type,
+  currency:demo.currency||"USD",
+  duration:dur,
+  duration_unit:duration_unit||"s",
+  underlying_symbol:String(underlying_symbol)
+};
+
+if(type==="DIGITOVER" || type==="DIGITUNDER"){
+  const digit=Number(barrier);
+  if(!Number.isInteger(digit) || digit<0 || digit>9){
+    return res.status(400).json({error:"Barrier must be a digit from 0 to 9."});
+  }
+  proposalRequest.barrier=digit;
+}
+
+const result=await sendTradingRequest(entry,proposalRequest);
   currency:demo.currency||"USD",
   duration:dur,
   duration_unit:duration_unit||"s",
