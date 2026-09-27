@@ -278,35 +278,13 @@ app.get("/api/trading/tick", async (req,res) => {
   } catch(err) { res.status(502).json({error:err.message||"Could not load price."}); }
   finally { try{ws.close();}catch{} }
 });
-
-app.post("/api/trading/proposal", async (req,res) => {
-  const auth=requireSession(req,res); if(!auth)return;
-  try {
-    const demo=await getDemoAccount(auth.session);
-    if(!demo?.account_id)return res.status(400).json({error:"No demo account available."});
-    const {underlying_symbol,contract_type,amount,duration,duration_unit,barrier}=req.body||{};
-    const stake=Number(amount), dur=Number(duration);
-    if(!underlying_symbol||!contract_type)return res.status(400).json({error:"Symbol and contract type are required."});
-    if(!Number.isFinite(stake)||stake<=0)return res.status(400).json({error:"Stake must be greater than zero."});
-    if(!Number.isFinite(dur)||dur<=0)return res.status(400).json({error:"Duration must be greater than zero."});
-    const type=String(contract_type).toUpperCase();
-    if(!new Set(["CALL","PUT","DIGITOVER","DIGITUNDER"]).has(type))return res.status(400).json({error:"This demo contract type is not supported."});
-const proposalRequest={
-  proposal:1,
-  amount:stake,
-  basis:"stake",
-  contract_type:type,
-  currency:demo.currency||"USD",
-  duration:dur,
-  duration_unit:duration_unit||"s",
-  underlying_symbol:String(underlying_symbol)
-};
 app.post("/api/trading/proposal", async (req,res) => {
   const auth=requireSession(req,res); if(!auth)return;
 
   try {
     const demo=await getDemoAccount(auth.session);
-    if(!demo?.account_id)return res.status(400).json({error:"No demo account available."});
+    if(!demo?.account_id)
+      return res.status(400).json({error:"No demo account available."});
 
     const {underlying_symbol,contract_type,amount,duration,duration_unit,barrier}=req.body||{};
 
@@ -347,96 +325,24 @@ app.post("/api/trading/proposal", async (req,res) => {
       proposalRequest.barrier=digit;
     }
 
-    const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
+    const entry=await getTradingSocket(
+      auth.sessionId,
+      auth.session,
+      demo.account_id
+    );
+
     const result=await sendTradingRequest(entry,proposalRequest);
 
-    res.json({success:true,proposal:result.proposal||null});
+    res.json({
+      success:true,
+      proposal:result.proposal||null
+    });
 
   } catch(err) {
     console.error("Proposal error:",err);
-    res.status(502).json({error:err.message||"Could not get a demo trade proposal."});
-  }
-});
-app.post("/api/trading/buy", async (req,res) => {
-  const auth=requireSession(req,res); if(!auth)return;
-  try {
-    const demo=await getDemoAccount(auth.session);
-    if(!demo?.account_id)return res.status(400).json({error:"No demo account available."});
-    const proposal_id=String(req.body?.proposal_id||"").trim(), price=Number(req.body?.price);
-    if(!proposal_id)return res.status(400).json({error:"Proposal ID is required."});
-    if(!Number.isFinite(price)||price<=0)return res.status(400).json({error:"A valid proposal price is required."});
-    const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const result=await sendTradingRequest(entry,{buy:proposal_id,price});
-    console.log("Demo contract purchased:",result.buy?.contract_id||"unknown");
-    res.json({success:true,buy:result.buy||null});
-  } catch(err) {
-    console.error("Demo buy error:",err);
-    res.status(502).json({error:err.message||"Could not place demo trade."});
+    res.status(502).json({
+      error:err.message||"Could not get a demo trade proposal."
+    });
   }
 });
 
-app.post("/api/trading/open-contract", async (req,res) => {
-  const auth=requireSession(req,res); if(!auth)return;
-  try {
-    const demo=await getDemoAccount(auth.session);
-    if(!demo?.account_id)return res.status(400).json({error:"No demo account available."});
-    const contract_id=String(req.body?.contract_id||"").trim();
-    if(!contract_id)return res.status(400).json({error:"Contract ID is required."});
-    const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const contractResponse=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id:Number(contract_id)});
-    const contract=contractResponse?.proposal_open_contract||null;
-    const terminalStatuses=new Set(["won","lost","sold","expired"]);
-
-    if(contract?.contract_id && terminalStatuses.has(String(contract.status||contract.contract_status||"").toLowerCase())) {
-      const list=tradeHistories.get(auth.sessionId)||[];
-      const item={
-        contract_id:String(contract.contract_id),
-        symbol:contract.underlying||contract.underlying_symbol||contract.symbol||null,
-        contract_type:contract.contract_type||null,
-        status:String(contract.status||contract.contract_status||"").toLowerCase(),
-        profit:contract.profit!=null?Number(contract.profit):null,
-        payout:contract.payout!=null?Number(contract.payout):null,
-        buy_price:contract.buy_price!=null?Number(contract.buy_price):null,
-        sell_price:contract.sell_price!=null?Number(contract.sell_price):null,
-        currency:contract.currency||demo.currency||"USD",
-        entry_spot:contract.entry_spot??null,
-        exit_spot:contract.exit_spot??null,
-        date_start:contract.date_start??null,
-        date_expiry:contract.date_expiry??null,
-        completed_at:Date.now()
-      };
-
-      const idx=list.findIndex(x=>x.contract_id===item.contract_id);
-      if(idx>=0) list[idx]=item;
-      else list.unshift(item);
-
-      tradeHistories.set(auth.sessionId,list.slice(0,50));
-    }
-
-    res.json({success:true,contract});
-  } catch(err) {
-    console.error("Open contract error:",err);
-    res.status(502).json({error:err.message||"Could not load contract status."});
-  }
-});
-
-app.get("/api/trading/history", (req,res) => {
-  const auth=requireSession(req,res); if(!auth)return;
-  res.json({success:true,history:tradeHistories.get(auth.sessionId)||[]});
-});
-
-app.post("/api/trading/disconnect", (req,res) => {
-  const auth=requireSession(req,res); if(!auth)return;
-  const entry=tradingSockets.get(auth.sessionId);
-  if(entry){
-    try{entry.ws.close();}catch{}
-    tradingSockets.delete(auth.sessionId);
-  }
-  res.json({success:true});
-});
-
-app.listen(PORT,()=> {
-  console.log(`TradeZora backend running on port ${PORT}`);
-  console.log(`CORS allowed origin: ${FRONTEND_ORIGIN}`);
-  console.log("Demo trading endpoints are enabled.");
-});
