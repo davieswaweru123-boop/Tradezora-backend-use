@@ -14,6 +14,7 @@ const oauthSessions = new Map();
 const userSessions = new Map();
 const connectionCodes = new Map();
 const tradingSockets = new Map();
+const tradeHistories = new Map();
 let requestCounter = 1000;
 
 function base64url(buffer) {
@@ -328,12 +329,40 @@ app.post("/api/trading/open-contract", async (req,res) => {
     const contract_id=String(req.body?.contract_id||"").trim();
     if(!contract_id)return res.status(400).json({error:"Contract ID is required."});
     const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const result=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id});
-    res.json({success:true,contract:result.proposal_open_contract||null});
+    const contract=result.proposal_open_contract||null;
+    const terminalStatuses=new Set(["won","lost","sold","expired"]);
+    if(contract?.contract_id && terminalStatuses.has(String(contract.status||contract.contract_status||"").toLowerCase())) {
+      const list=tradeHistories.get(auth.sessionId)||[];
+      const item={
+        contract_id:String(contract.contract_id),
+        symbol:contract.underlying||contract.underlying_symbol||contract.symbol||null,
+        contract_type:contract.contract_type||null,
+        status:String(contract.status||contract.contract_status||"").toLowerCase(),
+        profit:contract.profit!=null?Number(contract.profit):null,
+        payout:contract.payout!=null?Number(contract.payout):null,
+        buy_price:contract.buy_price!=null?Number(contract.buy_price):null,
+        sell_price:contract.sell_price!=null?Number(contract.sell_price):null,
+        currency:contract.currency||demo.currency||"USD",
+        entry_spot:contract.entry_spot??null,
+        exit_spot:contract.exit_spot??null,
+        date_start:contract.date_start??null,
+        date_expiry:contract.date_expiry??null,
+        completed_at:Date.now()
+      };
+      const idx=list.findIndex(x=>x.contract_id===item.contract_id);
+      if(idx>=0) list[idx]=item; else list.unshift(item);
+      tradeHistories.set(auth.sessionId,list.slice(0,50));
+    }
+    res.json({success:true,contract});
   } catch(err) {
     console.error("Open contract error:",err);
     res.status(502).json({error:err.message||"Could not load contract status."});
   }
+});
+
+app.get("/api/trading/history", (req,res) => {
+  const auth=requireSession(req,res); if(!auth)return;
+  res.json({success:true,history:tradeHistories.get(auth.sessionId)||[]});
 });
 
 app.post("/api/trading/disconnect", (req,res) => {
@@ -348,4 +377,4 @@ app.listen(PORT,()=> {
   console.log(`CORS allowed origin: ${FRONTEND_ORIGIN}`);
   console.log("Demo trading endpoints are enabled.");
 });
-    
+                        
