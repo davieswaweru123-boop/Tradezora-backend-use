@@ -329,8 +329,8 @@ app.post("/api/trading/open-contract", async (req,res) => {
     const contract_id=String(req.body?.contract_id||"").trim();
     if(!contract_id)return res.status(400).json({error:"Contract ID is required."});
     const entry=await getTradingSocket(auth.sessionId,auth.session,demo.account_id);
-    const result=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id:Number(contract_id),subscribe:1});
-    const contract=result.proposal_open_contract||null;
+    const contractResponse=await sendTradingRequest(entry,{proposal_open_contract:1,contract_id:Number(contract_id)});
+    const contract=contractResponse?.proposal_open_contract||null;
     const terminalStatuses=new Set(["won","lost","sold","expired"]);
     if(contract?.contract_id && terminalStatuses.has(String(contract.status||contract.contract_status||"").toLowerCase())) {
       const list=tradeHistories.get(auth.sessionId)||[];
@@ -378,3 +378,4 @@ app.listen(PORT,()=> {
   console.log(`CORS allowed origin: ${FRONTEND_ORIGIN}`);
   console.log("Demo trading endpoints are enabled.");
 });
+  
