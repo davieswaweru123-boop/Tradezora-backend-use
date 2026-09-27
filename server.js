@@ -314,8 +314,14 @@ const result=await sendTradingRequest(entry,proposalRequest);
 
 res.json({success:true,proposal:result.proposal||null});
   
-  } catch(err) {
-    res.json({success:true,proposal:result.proposal||null});
+  const result=await sendTradingRequest(entry,proposalRequest);
+
+res.json({success:true,proposal:result.proposal||null});
+} catch(err) {
+  console.error("Proposal error:",err);
+  res.status(502).json({error:err.message||"Could not get a demo trade proposal."});
+  }
+  
   } catch(err) {
     console.error("Proposal error:",err);
     res.status(502).json({error:err.message||"Could not get a demo trade proposal."});
