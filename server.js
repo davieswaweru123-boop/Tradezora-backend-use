@@ -687,6 +687,7 @@ app.post(
     }
   }
 );
+
 /* =========================================================
    FORGOT PASSWORD
 ========================================================= */
@@ -823,7 +824,6 @@ app.post(
     }
   }
 );
-
 
 /* =========================================================
    RESET PASSWORD
@@ -988,7 +988,6 @@ app.post(
   }
 );
 
-
 /* =========================================================
    CURRENT USER
 ========================================================= */
@@ -1027,7 +1026,6 @@ app.get(
     });
   }
 );
-
 
 /* =========================================================
    ACCOUNT
@@ -1068,6 +1066,196 @@ app.get(
   }
 );
 
+/* =========================================================
+   CHANGE ACCOUNT PASSWORD
+========================================================= */
+
+app.patch(
+  "/api/account/password",
+  async (req, res) => {
+    const auth =
+      await requireAuth(
+        req,
+        res
+      );
+
+    if (!auth) {
+      return;
+    }
+
+    try {
+      const currentPassword =
+        String(
+          req.body?.current_password || ""
+        );
+
+      const newPassword =
+        String(
+          req.body?.new_password || ""
+        );
+
+      const confirmPassword =
+        String(
+          req.body?.confirm_password || ""
+        );
+
+      if (!currentPassword) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Current password is required."
+        });
+      }
+
+      if (newPassword.length < 8) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "New password must be at least 8 characters."
+        });
+      }
+
+      if (newPassword !== confirmPassword) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "New passwords do not match."
+        });
+      }
+
+      if (currentPassword === newPassword) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "New password must be different from your current password."
+        });
+      }
+
+      const result =
+        await pool.query(
+          `
+            SELECT
+              id,
+              password_hash
+            FROM users
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [
+            auth.session.id
+          ]
+        );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error:
+            "Account not found."
+        });
+      }
+
+      const user =
+        result.rows[0];
+
+      const passwordMatches =
+        await bcrypt.compare(
+          currentPassword,
+          user.password_hash
+        );
+
+      if (!passwordMatches) {
+        return res.status(401).json({
+          success: false,
+          error:
+            "Current password is incorrect."
+        });
+      }
+
+      const passwordHash =
+        await bcrypt.hash(
+          newPassword,
+          12
+        );
+
+      const currentTokenHash =
+        hashSessionToken(
+          auth.token
+        );
+
+      const client =
+        await pool.connect();
+
+      try {
+        await client.query(
+          "BEGIN"
+        );
+
+        await client.query(
+          `
+            UPDATE users
+            SET
+              password_hash = $1,
+              updated_at = NOW()
+            WHERE id = $2
+          `,
+          [
+            passwordHash,
+            user.id
+          ]
+        );
+
+        /*
+          Keep the current device logged in.
+          Log out other active sessions.
+        */
+        await client.query(
+          `
+            DELETE FROM sessions
+            WHERE user_id = $1
+              AND token_hash <> $2
+          `,
+          [
+            user.id,
+            currentTokenHash
+          ]
+        );
+
+        await client.query(
+          "COMMIT"
+        );
+      } catch (error) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      console.log(
+        `TradeZora password changed for user ${user.id}`
+      );
+
+      return res.json({
+        success: true,
+        message:
+          "Password changed successfully."
+      });
+    } catch (error) {
+      console.error(
+        "Change password error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error:
+          "Could not change your password."
+      });
+    }
+  }
+);
 
 /* =========================================================
    CHANGE ACCOUNT NAME
@@ -1165,7 +1353,6 @@ app.patch(
   }
 );
 
-
 /* =========================================================
    LOGOUT
 ========================================================= */
@@ -1231,6 +1418,7 @@ app.post(
     }
   }
 );
+
 /* =========================================================
    404 HANDLER
 ========================================================= */
@@ -1244,7 +1432,6 @@ app.use(
     });
   }
 );
-
 
 /* =========================================================
    GLOBAL ERROR HANDLER
@@ -1273,7 +1460,6 @@ app.use(
     });
   }
 );
-
 
 /* =========================================================
    DATABASE STARTUP
