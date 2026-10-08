@@ -25,21 +25,21 @@ const RESEND_FROM_EMAIL =
 
 /*
 =========================================================
-ADMIN
+OWNER ADMIN
 =========================================================
 */
 
 const ADMIN_EMAIL = "davieswaweru123@gmail.com";
-
-if (!DATABASE_URL) {
-  console.error("DATABASE_URL is not configured.");
-}
 
 /*
 =========================================================
 DATABASE
 =========================================================
 */
+
+if (!DATABASE_URL) {
+  console.error("DATABASE_URL is not configured.");
+}
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
@@ -93,6 +93,20 @@ function isValidName(name) {
   return value.length >= 2 && value.length <= 80;
 }
 
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+
+  if (typeof forwarded === "string" && forwarded.length > 0) {
+    return forwarded.split(",")[0].trim();
+  }
+
+  return req.socket?.remoteAddress || null;
+}
+
+function getUserAgent(req) {
+  return String(req.get("user-agent") || "").slice(0, 1000);
+}
+
 /*
 =========================================================
 CORS
@@ -131,7 +145,11 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "1mb" }));
+app.use(
+  express.json({
+    limit: "1mb"
+  })
+);
 
 /*
 =========================================================
@@ -143,6 +161,12 @@ async function initializeDatabase() {
   if (!DATABASE_URL) {
     throw new Error("DATABASE_URL is missing.");
   }
+
+  /*
+  -------------------------------------------------------
+  USERS
+  -------------------------------------------------------
+  */
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -158,7 +182,7 @@ async function initializeDatabase() {
 
   /*
   -------------------------------------------------------
-  ADD ROLE COLUMN TO EXISTING DATABASES
+  USER ROLE
   -------------------------------------------------------
   */
 
@@ -169,7 +193,40 @@ async function initializeDatabase() {
 
   /*
   -------------------------------------------------------
-  ONLY THE ADMIN EMAIL CAN HAVE ADMIN ROLE
+  ACCOUNT STATUS
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';
+  `);
+
+  /*
+  -------------------------------------------------------
+  KYC STATUS
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS kyc_status VARCHAR(20) NOT NULL DEFAULT 'not_submitted';
+  `);
+
+  /*
+  -------------------------------------------------------
+  LAST LOGIN
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+  `);
+
+  /*
+  -------------------------------------------------------
+  ONLY THE OWNER EMAIL CAN BE ADMIN
   -------------------------------------------------------
   */
 
@@ -245,7 +302,193 @@ async function initializeDatabase() {
     ON password_reset_tokens(expires_at);
   `);
 
+  /*
+  -------------------------------------------------------
+  KYC RECORDS
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kyc_records (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      document_type VARCHAR(50),
+      document_reference TEXT,
+      notes TEXT,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_at TIMESTAMPTZ,
+      reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL
+    );
+  `);
+
+  /*
+  -------------------------------------------------------
+  DEPOSITS
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS deposits (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount NUMERIC(18, 2) NOT NULL,
+      currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      provider VARCHAR(50),
+      provider_reference VARCHAR(255),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  /*
+  -------------------------------------------------------
+  WITHDRAWALS
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount NUMERIC(18, 2) NOT NULL,
+      currency VARCHAR(10) NOT NULL DEFAULT 'USD',
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      destination_type VARCHAR(50),
+      destination_reference TEXT,
+      provider_reference VARCHAR(255),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  /*
+  -------------------------------------------------------
+  TRADES
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS trades (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      market VARCHAR(100),
+      contract_type VARCHAR(100),
+      direction VARCHAR(20),
+      stake NUMERIC(18, 2) NOT NULL DEFAULT 0,
+      entry_price NUMERIC(30, 10),
+      exit_price NUMERIC(30, 10),
+      profit_loss NUMERIC(18, 2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'open',
+      opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      closed_at TIMESTAMPTZ
+    );
+  `);
+
+  /*
+  -------------------------------------------------------
+  LEDGER
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ledger (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type VARCHAR(50) NOT NULL,
+      amount NUMERIC(18, 2) NOT NULL,
+      balance_before NUMERIC(18, 2),
+      balance_after NUMERIC(18, 2),
+      reference_type VARCHAR(50),
+      reference_id BIGINT,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  /*
+  -------------------------------------------------------
+  ADMIN AUDIT LOG
+  -------------------------------------------------------
+  */
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      admin_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      action VARCHAR(100) NOT NULL,
+      target_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      details JSONB,
+      ip_address VARCHAR(100),
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS admin_audit_logs_created_at_idx
+    ON admin_audit_logs(created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS admin_audit_logs_target_user_idx
+    ON admin_audit_logs(target_user_id);
+  `);
+
   console.log("TradeZora database initialized.");
+}
+
+/*
+=========================================================
+ADMIN AUDIT
+=========================================================
+*/
+
+async function writeAdminAudit({
+  adminUserId,
+  action,
+  targetUserId = null,
+  details = {},
+  req
+}) {
+  try {
+    await pool.query(
+      `
+        INSERT INTO admin_audit_logs
+        (
+          admin_user_id,
+          action,
+          target_user_id,
+          details,
+          ip_address,
+          user_agent
+        )
+        VALUES
+        (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6
+        )
+      `,
+      [
+        adminUserId,
+        action,
+        targetUserId,
+        JSON.stringify(details),
+        getClientIp(req),
+        getUserAgent(req)
+      ]
+    );
+  } catch (error) {
+    console.error(
+      "Admin audit log error:",
+      error
+    );
+  }
 }
 
 /*
@@ -263,7 +506,9 @@ async function getSessionFromRequest(req) {
       req.get("Authorization") || "";
 
     if (authorization.startsWith("Bearer ")) {
-      token = authorization.slice(7).trim();
+      token = authorization
+        .slice(7)
+        .trim();
     }
   }
 
@@ -284,7 +529,11 @@ async function getSessionFromRequest(req) {
         u.email,
         u.balance,
         u.created_at,
-        u.role
+        u.updated_at,
+        u.role,
+        u.status,
+        u.kyc_status,
+        u.last_login_at
       FROM sessions s
       INNER JOIN users u
         ON u.id = s.user_id
@@ -314,6 +563,15 @@ async function requireAuth(req, res) {
       res.status(401).json({
         success: false,
         error: "You are not logged in."
+      });
+
+      return null;
+    }
+
+    if (auth.session.status !== "active") {
+      res.status(403).json({
+        success: false,
+        error: "This account is not active."
       });
 
       return null;
@@ -399,9 +657,7 @@ async function sendPasswordResetEmail({
 
       body: JSON.stringify({
         from: RESEND_FROM_EMAIL,
-
         to: [to],
-
         subject:
           "Reset your TradeZora password",
 
@@ -465,7 +721,7 @@ app.get("/", (req, res) => {
   res.json({
     name: "TradeZora Backend",
     status: "online",
-    version: "2.1.0",
+    version: "3.0.0",
     mode: "standalone-demo",
     deriv_connected: false
   });
@@ -583,27 +839,33 @@ app.post(
         await pool.query(
           `
             INSERT INTO users
-              (
-                name,
-                email,
-                password_hash,
-                balance,
-                role
-              )
+            (
+              name,
+              email,
+              password_hash,
+              balance,
+              role,
+              status,
+              kyc_status
+            )
             VALUES
-              (
-                $1,
-                $2,
-                $3,
-                10000.00,
-                $4
-              )
+            (
+              $1,
+              $2,
+              $3,
+              10000.00,
+              $4,
+              'active',
+              'not_submitted'
+            )
             RETURNING
               id,
               name,
               email,
               balance,
               role,
+              status,
+              kyc_status,
               created_at
           `,
           [
@@ -626,17 +888,17 @@ app.post(
       await pool.query(
         `
           INSERT INTO sessions
-            (
-              user_id,
-              token_hash,
-              expires_at
-            )
+          (
+            user_id,
+            token_hash,
+            expires_at
+          )
           VALUES
-            (
-              $1,
-              $2,
-              NOW() + INTERVAL '30 days'
-            )
+          (
+            $1,
+            $2,
+            NOW() + INTERVAL '30 days'
+          )
         `,
         [
           user.id,
@@ -664,6 +926,8 @@ app.post(
           balance:
             Number(user.balance),
           role: user.role,
+          status: user.status,
+          kyc_status: user.kyc_status,
           created_at:
             user.created_at
         }
@@ -724,7 +988,10 @@ app.post(
               password_hash,
               balance,
               role,
-              created_at
+              status,
+              kyc_status,
+              created_at,
+              last_login_at
             FROM users
             WHERE email = $1
             LIMIT 1
@@ -745,7 +1012,7 @@ app.post(
 
       /*
       -----------------------------------------------------
-      KEEP ADMIN EMAIL AS THE ONLY ADMIN
+      KEEP OWNER EMAIL AS THE ONLY ADMIN
       -----------------------------------------------------
       */
 
@@ -794,6 +1061,14 @@ app.post(
         });
       }
 
+      if (user.status !== "active") {
+        return res.status(403).json({
+          success: false,
+          error:
+            "This account is not active."
+        });
+      }
+
       const token =
         createSessionToken();
 
@@ -803,22 +1078,33 @@ app.post(
       await pool.query(
         `
           INSERT INTO sessions
-            (
-              user_id,
-              token_hash,
-              expires_at
-            )
+          (
+            user_id,
+            token_hash,
+            expires_at
+          )
           VALUES
-            (
-              $1,
-              $2,
-              NOW() + INTERVAL '30 days'
-            )
+          (
+            $1,
+            $2,
+            NOW() + INTERVAL '30 days'
+          )
         `,
         [
           user.id,
           tokenHash
         ]
+      );
+
+      await pool.query(
+        `
+          UPDATE users
+          SET
+            last_login_at = NOW(),
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+        [user.id]
       );
 
       console.log(
@@ -841,6 +1127,8 @@ app.post(
           balance:
             Number(user.balance),
           role: user.role,
+          status: user.status,
+          kyc_status: user.kyc_status,
           created_at:
             user.created_at
         }
@@ -930,17 +1218,17 @@ app.post(
       await pool.query(
         `
           INSERT INTO password_reset_tokens
-            (
-              user_id,
-              token_hash,
-              expires_at
-            )
+          (
+            user_id,
+            token_hash,
+            expires_at
+          )
           VALUES
-            (
-              $1,
-              $2,
-              NOW() + INTERVAL '30 minutes'
-            )
+          (
+            $1,
+            $2,
+            NOW() + INTERVAL '30 minutes'
+          )
         `,
         [
           user.id,
@@ -1202,8 +1490,12 @@ app.get(
         balance:
           Number(user.balance),
         role: user.role,
+        status: user.status,
+        kyc_status: user.kyc_status,
         created_at:
-          user.created_at
+          user.created_at,
+        last_login_at:
+          user.last_login_at
       },
 
       session_expires_at:
@@ -1246,8 +1538,12 @@ app.get(
         currency: "USD",
         account_type: "demo",
         role: user.role,
+        status: user.status,
+        kyc_status: user.kyc_status,
         created_at:
-          user.created_at
+          user.created_at,
+        last_login_at:
+          user.last_login_at
       }
     });
   }
@@ -1392,11 +1688,6 @@ app.patch(
           ]
         );
 
-        /*
-        Keep the current session,
-        remove other sessions.
-        */
-
         const currentTokenHash =
           hashSessionToken(
             auth.token
@@ -1498,6 +1789,8 @@ app.patch(
               email,
               balance,
               role,
+              status,
+              kyc_status,
               created_at
           `,
           [
@@ -1534,6 +1827,8 @@ app.patch(
           balance:
             Number(user.balance),
           role: user.role,
+          status: user.status,
+          kyc_status: user.kyc_status,
           created_at:
             user.created_at
         }
@@ -1600,6 +1895,723 @@ app.get(
         success: false,
         error:
           "Failed to verify admin access."
+      });
+    }
+  }
+);
+
+/*
+=========================================================
+ADMIN DASHBOARD STATISTICS
+=========================================================
+*/
+
+app.get(
+  "/api/admin/stats",
+  async (req, res) => {
+    try {
+      const auth =
+        await requireAdmin(
+          req,
+          res
+        );
+
+      if (!auth) {
+        return;
+      }
+
+      const result =
+        await pool.query(`
+          SELECT
+            (
+              SELECT COUNT(*)
+              FROM users
+            ) AS total_users,
+
+            (
+              SELECT COUNT(*)
+              FROM users
+              WHERE status = 'active'
+            ) AS active_users,
+
+            (
+              SELECT COUNT(*)
+              FROM users
+              WHERE status <> 'active'
+            ) AS inactive_users,
+
+            (
+              SELECT COUNT(*)
+              FROM users
+              WHERE kyc_status = 'pending'
+            ) AS pending_kyc,
+
+            (
+              SELECT COUNT(*)
+              FROM users
+              WHERE kyc_status = 'approved'
+            ) AS approved_kyc,
+
+            (
+              SELECT COUNT(*)
+              FROM deposits
+              WHERE status = 'pending'
+            ) AS pending_deposits,
+
+            (
+              SELECT COALESCE(SUM(amount), 0)
+              FROM deposits
+              WHERE status = 'pending'
+            ) AS pending_deposit_amount,
+
+            (
+              SELECT COUNT(*)
+              FROM withdrawals
+              WHERE status = 'pending'
+            ) AS pending_withdrawals,
+
+            (
+              SELECT COALESCE(SUM(amount), 0)
+              FROM withdrawals
+              WHERE status = 'pending'
+            ) AS pending_withdrawal_amount,
+
+            (
+              SELECT COUNT(*)
+              FROM trades
+              WHERE status = 'open'
+            ) AS open_trades,
+
+            (
+              SELECT COUNT(*)
+              FROM trades
+            ) AS total_trades,
+
+            (
+              SELECT COALESCE(SUM(profit_loss), 0)
+              FROM trades
+            ) AS total_trade_profit_loss,
+
+            (
+              SELECT COALESCE(SUM(balance), 0)
+              FROM users
+            ) AS total_demo_balance
+        `);
+
+      const stats =
+        result.rows[0];
+
+      await writeAdminAudit({
+        adminUserId:
+          auth.session.id,
+        action:
+          "VIEW_ADMIN_STATS",
+        req
+      });
+
+      res.json({
+        success: true,
+
+        mode: "standalone-demo",
+
+        stats: {
+          total_users:
+            Number(stats.total_users),
+
+          active_users:
+            Number(stats.active_users),
+
+          inactive_users:
+            Number(stats.inactive_users),
+
+          pending_kyc:
+            Number(stats.pending_kyc),
+
+          approved_kyc:
+            Number(stats.approved_kyc),
+
+          pending_deposits:
+            Number(stats.pending_deposits),
+
+          pending_deposit_amount:
+            Number(stats.pending_deposit_amount),
+
+          pending_withdrawals:
+            Number(stats.pending_withdrawals),
+
+          pending_withdrawal_amount:
+            Number(stats.pending_withdrawal_amount),
+
+          open_trades:
+            Number(stats.open_trades),
+
+          total_trades:
+            Number(stats.total_trades),
+
+          total_trade_profit_loss:
+            Number(stats.total_trade_profit_loss),
+
+          total_demo_balance:
+            Number(stats.total_demo_balance)
+        }
+      });
+    } catch (error) {
+      console.error(
+        "Admin stats error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Could not load admin statistics."
+      });
+    }
+  }
+);
+
+/*
+=========================================================
+ADMIN USERS
+=========================================================
+*/
+
+app.get(
+  "/api/admin/users",
+  async (req, res) => {
+    try {
+      const auth =
+        await requireAdmin(
+          req,
+          res
+        );
+
+      if (!auth) {
+        return;
+      }
+
+      const search =
+        String(
+          req.query?.search || ""
+        ).trim();
+
+      const status =
+        String(
+          req.query?.status || ""
+        ).trim().toLowerCase();
+
+      const limitValue =
+        Number(req.query?.limit || 50);
+
+      const offsetValue =
+        Number(req.query?.offset || 0);
+
+      const limit =
+        Math.min(
+          Math.max(
+            Number.isFinite(limitValue)
+              ? Math.floor(limitValue)
+              : 50,
+            1
+          ),
+          100
+        );
+
+      const offset =
+        Math.max(
+          Number.isFinite(offsetValue)
+            ? Math.floor(offsetValue)
+            : 0,
+          0
+        );
+
+      const params = [];
+
+      const conditions = [];
+
+      if (search) {
+        params.push(
+          `%${search}%`
+        );
+
+        const searchParam =
+          `$${params.length}`;
+
+        conditions.push(`
+          (
+            name ILIKE ${searchParam}
+            OR email ILIKE ${searchParam}
+          )
+        `);
+      }
+
+      if (status) {
+        params.push(status);
+
+        conditions.push(
+          `status = $${params.length}`
+        );
+      }
+
+      const whereClause =
+        conditions.length > 0
+          ? `WHERE ${conditions.join(" AND ")}`
+          : "";
+
+      const countResult =
+        await pool.query(
+          `
+            SELECT COUNT(*) AS count
+            FROM users
+            ${whereClause}
+          `,
+          params
+        );
+
+      const dataParams = [
+        ...params,
+        limit,
+        offset
+      ];
+
+      const usersResult =
+        await pool.query(
+          `
+            SELECT
+              id,
+              name,
+              email,
+              balance,
+              role,
+              status,
+              kyc_status,
+              created_at,
+              updated_at,
+              last_login_at
+            FROM users
+            ${whereClause}
+            ORDER BY created_at DESC
+            LIMIT $${dataParams.length - 1}
+            OFFSET $${dataParams.length}
+          `,
+          dataParams
+        );
+
+      const users =
+        usersResult.rows.map(
+          (user) => ({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            balance:
+              Number(user.balance),
+            role: user.role,
+            status: user.status,
+            kyc_status:
+              user.kyc_status,
+            created_at:
+              user.created_at,
+            updated_at:
+              user.updated_at,
+            last_login_at:
+              user.last_login_at
+          })
+        );
+
+      await writeAdminAudit({
+        adminUserId:
+          auth.session.id,
+        action:
+          "VIEW_USERS",
+        details: {
+          search,
+          status,
+          limit,
+          offset
+        },
+        req
+      });
+
+      res.json({
+        success: true,
+
+        users,
+
+        pagination: {
+          total:
+            Number(
+              countResult.rows[0].count
+            ),
+
+          limit,
+
+          offset,
+
+          has_more:
+            offset + users.length <
+            Number(
+              countResult.rows[0].count
+            )
+        }
+      });
+    } catch (error) {
+      console.error(
+        "Admin users error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Could not load users."
+      });
+    }
+  }
+);
+
+/*
+=========================================================
+ADMIN USER DETAILS
+=========================================================
+*/
+
+app.get(
+  "/api/admin/users/:id",
+  async (req, res) => {
+    try {
+      const auth =
+        await requireAdmin(
+          req,
+          res
+        );
+
+      if (!auth) {
+        return;
+      }
+
+      const userId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(userId) ||
+        userId <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Invalid user ID."
+        });
+      }
+
+      const userResult =
+        await pool.query(
+          `
+            SELECT
+              id,
+              name,
+              email,
+              balance,
+              role,
+              status,
+              kyc_status,
+              created_at,
+              updated_at,
+              last_login_at
+            FROM users
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [userId]
+        );
+
+      if (
+        userResult.rows.length === 0
+      ) {
+        return res.status(404).json({
+          success: false,
+          error:
+            "User not found."
+        });
+      }
+
+      const user =
+        userResult.rows[0];
+
+      const [
+        tradesResult,
+        depositsResult,
+        withdrawalsResult,
+        ledgerResult
+      ] = await Promise.all([
+        pool.query(
+          `
+            SELECT
+              id,
+              market,
+              contract_type,
+              direction,
+              stake,
+              entry_price,
+              exit_price,
+              profit_loss,
+              status,
+              opened_at,
+              closed_at
+            FROM trades
+            WHERE user_id = $1
+            ORDER BY opened_at DESC
+            LIMIT 20
+          `,
+          [userId]
+        ),
+
+        pool.query(
+          `
+            SELECT
+              id,
+              amount,
+              currency,
+              status,
+              provider,
+              provider_reference,
+              created_at,
+              updated_at
+            FROM deposits
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 20
+          `,
+          [userId]
+        ),
+
+        pool.query(
+          `
+            SELECT
+              id,
+              amount,
+              currency,
+              status,
+              destination_type,
+              destination_reference,
+              provider_reference,
+              created_at,
+              updated_at
+            FROM withdrawals
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 20
+          `,
+          [userId]
+        ),
+
+        pool.query(
+          `
+            SELECT
+              id,
+              type,
+              amount,
+              balance_before,
+              balance_after,
+              reference_type,
+              reference_id,
+              description,
+              created_at
+            FROM ledger
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 30
+          `,
+          [userId]
+        )
+      ]);
+
+      await writeAdminAudit({
+        adminUserId:
+          auth.session.id,
+        action:
+          "VIEW_USER",
+        targetUserId:
+          userId,
+        req
+      });
+
+      res.json({
+        success: true,
+
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          balance:
+            Number(user.balance),
+          role: user.role,
+          status: user.status,
+          kyc_status:
+            user.kyc_status,
+          created_at:
+            user.created_at,
+          updated_at:
+            user.updated_at,
+          last_login_at:
+            user.last_login_at
+        },
+
+        trades:
+          tradesResult.rows.map(
+            (trade) => ({
+              ...trade,
+              stake:
+                Number(trade.stake),
+              entry_price:
+                trade.entry_price === null
+                  ? null
+                  : Number(
+                      trade.entry_price
+                    ),
+              exit_price:
+                trade.exit_price === null
+                  ? null
+                  : Number(
+                      trade.exit_price
+                    ),
+              profit_loss:
+                Number(
+                  trade.profit_loss
+                )
+            })
+          ),
+
+        deposits:
+          depositsResult.rows.map(
+            (deposit) => ({
+              ...deposit,
+              amount:
+                Number(
+                  deposit.amount
+                )
+            })
+          ),
+
+        withdrawals:
+          withdrawalsResult.rows.map(
+            (withdrawal) => ({
+              ...withdrawal,
+              amount:
+                Number(
+                  withdrawal.amount
+                )
+            })
+          ),
+
+        ledger:
+          ledgerResult.rows.map(
+            (entry) => ({
+              ...entry,
+              amount:
+                Number(entry.amount),
+              balance_before:
+                entry.balance_before === null
+                  ? null
+                  : Number(
+                      entry.balance_before
+                    ),
+              balance_after:
+                entry.balance_after === null
+                  ? null
+                  : Number(
+                      entry.balance_after
+                    )
+            })
+          )
+      });
+    } catch (error) {
+      console.error(
+        "Admin user details error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Could not load user details."
+      });
+    }
+  }
+);
+
+/*
+=========================================================
+ADMIN AUDIT LOGS
+=========================================================
+*/
+
+app.get(
+  "/api/admin/audit-logs",
+  async (req, res) => {
+    try {
+      const auth =
+        await requireAdmin(
+          req,
+          res
+        );
+
+      if (!auth) {
+        return;
+      }
+
+      const limitValue =
+        Number(
+          req.query?.limit || 50
+        );
+
+      const limit =
+        Math.min(
+          Math.max(
+            Number.isFinite(limitValue)
+              ? Math.floor(limitValue)
+              : 50,
+            1
+          ),
+          100
+        );
+
+      const result =
+        await pool.query(
+          `
+            SELECT
+              a.id,
+              a.action,
+              a.target_user_id,
+              a.details,
+              a.ip_address,
+              a.created_at,
+              u.name AS admin_name,
+              u.email AS admin_email
+            FROM admin_audit_logs a
+            LEFT JOIN users u
+              ON u.id = a.admin_user_id
+            ORDER BY a.created_at DESC
+            LIMIT $1
+          `,
+          [limit]
+        );
+
+      res.json({
+        success: true,
+
+        logs:
+          result.rows
+      });
+    } catch (error) {
+      console.error(
+        "Admin audit logs error:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        error:
+          "Could not load audit logs."
       });
     }
   }
@@ -1723,12 +2735,15 @@ async function cleanExpiredSessions() {
 =========================================================
 */
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "Endpoint not found."
-  });
-});
+app.use(
+  (req, res) => {
+    res.status(404).json({
+      success: false,
+      error:
+        "Endpoint not found."
+    });
+  }
+);
 
 /*
 =========================================================
@@ -1797,7 +2812,7 @@ async function startServer() {
         );
 
         console.log(
-          `Admin email: ${ADMIN_EMAIL}`
+          `Owner admin email: ${ADMIN_EMAIL}`
         );
 
         console.log(
