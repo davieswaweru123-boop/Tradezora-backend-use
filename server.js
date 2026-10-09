@@ -313,14 +313,24 @@ async function initializeDatabase() {
       id BIGSERIAL PRIMARY KEY,
       user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
       status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      legal_name VARCHAR(200),
+      date_of_birth DATE,
+      country VARCHAR(100),
       document_type VARCHAR(50),
       document_reference TEXT,
       notes TEXT,
+      rejection_reason TEXT,
       submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       reviewed_at TIMESTAMPTZ,
       reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL
     );
   `);
+
+  // Safe additive migrations for existing KYC tables.
+  await pool.query(`ALTER TABLE kyc_records ADD COLUMN IF NOT EXISTS legal_name VARCHAR(200);`);
+  await pool.query(`ALTER TABLE kyc_records ADD COLUMN IF NOT EXISTS date_of_birth DATE;`);
+  await pool.query(`ALTER TABLE kyc_records ADD COLUMN IF NOT EXISTS country VARCHAR(100);`);
+  await pool.query(`ALTER TABLE kyc_records ADD COLUMN IF NOT EXISTS rejection_reason TEXT;`);
 
   /*
   -------------------------------------------------------
@@ -2538,6 +2548,184 @@ app.get(
     }
   }
 );
+
+
+/*
+=========================================================
+IDENTITY VERIFICATION (KYC)
+=========================================================
+*/
+
+app.get("/api/kyc", async (req, res) => {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  try {
+    const result = await pool.query(
+      `SELECT id, status, legal_name, date_of_birth, country,
+              document_type, notes, rejection_reason, submitted_at, reviewed_at
+       FROM kyc_records WHERE user_id = $1 LIMIT 1`,
+      [auth.session.id]
+    );
+    res.json({ success: true, application: result.rows[0] || null });
+  } catch (error) {
+    console.error("KYC status error:", error);
+    res.status(500).json({ success: false, error: "Could not load identity verification status." });
+  }
+});
+
+app.post("/api/kyc", async (req, res) => {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  try {
+    const legalName = String(req.body?.legal_name || "").trim();
+    const dateOfBirth = String(req.body?.date_of_birth || "").trim();
+    const country = String(req.body?.country || "").trim();
+    const documentType = String(req.body?.document_type || "").trim();
+    const documentReference = String(req.body?.document_reference || "").trim();
+    const notes = String(req.body?.notes || "").trim();
+
+    if (!legalName || legalName.length > 200 || !dateOfBirth || !country || country.length > 100 || !documentType) {
+      return res.status(400).json({ success: false, error: "Enter your legal name, date of birth, country, and document type." });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) || Number.isNaN(Date.parse(dateOfBirth)) || new Date(dateOfBirth) >= new Date()) {
+      return res.status(400).json({ success: false, error: "Enter a valid date of birth in YYYY-MM-DD format." });
+    }
+    if (!["national_id", "passport", "driving_licence", "other"].includes(documentType)) {
+      return res.status(400).json({ success: false, error: "Choose a valid identity document type." });
+    }
+    if (documentReference.length > 80 || notes.length > 1000) {
+      return res.status(400).json({ success: false, error: "The document reference or notes are too long." });
+    }
+
+    const existing = await pool.query(
+      `SELECT status FROM kyc_records WHERE user_id = $1 LIMIT 1`,
+      [auth.session.id]
+    );
+    if (existing.rows[0]?.status === "approved" || existing.rows[0]?.status === "verified") {
+      return res.status(409).json({ success: false, error: "Your identity verification is already approved." });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO kyc_records
+         (user_id, status, legal_name, date_of_birth, country, document_type, document_reference, notes, rejection_reason, submitted_at, reviewed_at, reviewed_by)
+       VALUES ($1, 'pending', $2, $3::date, $4, $5, NULLIF($6, ''), NULLIF($7, ''), NULL, NOW(), NULL, NULL)
+       ON CONFLICT (user_id) DO UPDATE SET
+         status = 'pending', legal_name = EXCLUDED.legal_name,
+         date_of_birth = EXCLUDED.date_of_birth, country = EXCLUDED.country,
+         document_type = EXCLUDED.document_type, document_reference = EXCLUDED.document_reference,
+         notes = EXCLUDED.notes, rejection_reason = NULL,
+         submitted_at = NOW(), reviewed_at = NULL, reviewed_by = NULL
+       RETURNING id, status, legal_name, date_of_birth, country, document_type, notes, submitted_at`,
+      [auth.session.id, legalName, dateOfBirth, country, documentType, documentReference, notes]
+    );
+
+    await pool.query(
+      `UPDATE users SET kyc_status = 'pending' WHERE id = $1`,
+      [auth.session.id]
+    );
+
+    res.status(201).json({ success: true, message: "Identity verification submitted for review.", application: result.rows[0] });
+  } catch (error) {
+    console.error("KYC submission error:", error);
+    res.status(500).json({ success: false, error: "Could not submit identity verification." });
+  }
+});
+
+/*
+=========================================================
+ADMIN KYC REVIEW
+=========================================================
+*/
+
+app.get("/api/admin/kyc", async (req, res) => {
+  try {
+    const auth = await requireAdmin(req, res);
+    if (!auth) return;
+
+    const status = String(req.query?.status || "").trim().toLowerCase();
+    const search = String(req.query?.search || "").trim();
+    const params = [];
+    const conditions = [];
+    if (status && ["pending", "approved", "rejected"].includes(status)) {
+      params.push(status);
+      conditions.push(`k.status = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      conditions.push(`(u.name ILIKE $${params.length} OR u.email ILIKE $${params.length} OR k.legal_name ILIKE $${params.length})`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const result = await pool.query(
+      `SELECT k.id, k.user_id, u.name AS account_name, u.email,
+              k.status, k.legal_name, k.date_of_birth, k.country,
+              k.document_type, k.document_reference, k.notes,
+              k.rejection_reason, k.submitted_at, k.reviewed_at,
+              reviewer.name AS reviewed_by_name
+       FROM kyc_records k
+       JOIN users u ON u.id = k.user_id
+       LEFT JOIN users reviewer ON reviewer.id = k.reviewed_by
+       ${where}
+       ORDER BY CASE WHEN k.status = 'pending' THEN 0 ELSE 1 END, k.submitted_at DESC
+       LIMIT 100`,
+      params
+    );
+    res.json({ success: true, applications: result.rows });
+  } catch (error) {
+    console.error("Admin KYC list error:", error);
+    res.status(500).json({ success: false, error: "Could not load identity verification applications." });
+  }
+});
+
+app.patch("/api/admin/kyc/:id", async (req, res) => {
+  try {
+    const auth = await requireAdmin(req, res);
+    if (!auth) return;
+
+    const recordId = Number(req.params.id);
+    const status = String(req.body?.status || "").trim().toLowerCase();
+    const rejectionReason = String(req.body?.rejection_reason || "").trim();
+    if (!Number.isSafeInteger(recordId) || recordId <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid application ID." });
+    }
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ success: false, error: "Status must be approved or rejected." });
+    }
+    if (status === "rejected" && !rejectionReason) {
+      return res.status(400).json({ success: false, error: "Provide a reason when rejecting an application." });
+    }
+    if (rejectionReason.length > 1000) {
+      return res.status(400).json({ success: false, error: "Rejection reason is too long." });
+    }
+
+    const result = await pool.query(
+      `UPDATE kyc_records SET status = $1, rejection_reason = $2,
+              reviewed_at = NOW(), reviewed_by = $3
+       WHERE id = $4
+       RETURNING id, user_id, status, rejection_reason, reviewed_at`,
+      [status, status === "rejected" ? rejectionReason : null, auth.session.id, recordId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ success: false, error: "KYC application not found." });
+    }
+
+    const application = result.rows[0];
+    await pool.query(`UPDATE users SET kyc_status = $1 WHERE id = $2`, [status, application.user_id]);
+    await writeAdminAudit({
+      adminUserId: auth.session.id,
+      action: status === "approved" ? "kyc_approved" : "kyc_rejected",
+      targetUserId: application.user_id,
+      details: { kyc_record_id: application.id, status, rejection_reason: status === "rejected" ? rejectionReason : null },
+      req
+    });
+
+    res.json({ success: true, message: `Identity verification ${status}.`, application });
+  } catch (error) {
+    console.error("Admin KYC review error:", error);
+    res.status(500).json({ success: false, error: "Could not update identity verification status." });
+  }
+});
 
 /*
 =========================================================
