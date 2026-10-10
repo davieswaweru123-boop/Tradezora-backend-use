@@ -43,7 +43,7 @@ const MPESA_API_BASE = MPESA_ENV === "production"
 
 function parseUsdCents(value) {
   const raw = String(value ?? "").trim();
-  if (!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(raw)) return null;
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(raw)) return null;
   const [whole, fraction = ""] = raw.split(".");
   const cents = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
   return Number.isSafeInteger(cents) ? cents : null;
@@ -60,11 +60,11 @@ function formatUsdCents(cents) {
 }
 
 function normalizeKenyanPhone(value) {
-  let digits = String(value || "").replace(/\\D/g, "");
+  let digits = String(value || "").replace(/\D/g, "");
   if (digits.startsWith("0") && digits.length === 10) digits = "254" + digits.slice(1);
   if (digits.startsWith("7") && digits.length === 9) digits = "254" + digits;
   if (digits.startsWith("1") && digits.length === 9) digits = "254" + digits;
-  return /^254[17]\\d{8}$/.test(digits) ? digits : null;
+  return /^254[17]\d{8}$/.test(digits) ? digits : null;
 }
 
 async function getMpesaAccessToken() {
@@ -87,7 +87,7 @@ async function queryMpesaStkStatus(checkoutRequestId) {
     throw new Error("M-Pesa shortcode/passkey are not configured.");
   }
   const accessToken = await getMpesaAccessToken();
-  const timestamp = new Date().toISOString().replace(/\\D/g, "").slice(0, 14);
+  const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
   const password = Buffer.from(`${MPESA_SHORTCODE}${MPESA_PASSKEY}${timestamp}`).toString("base64");
   const response = await fetch(`${MPESA_API_BASE}/mpesa/stkpushquery/v1/query`, {
     method: "POST",
@@ -117,7 +117,7 @@ async function requestMpesaStkPush({ phone, kesAmount, accountReference, descrip
     throw new Error("MPESA_CALLBACK_URL must be a public HTTPS URL.");
   }
   const accessToken = await getMpesaAccessToken();
-  const timestamp = new Date().toISOString().replace(/\\D/g, "").slice(0, 14);
+  const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
   const password = Buffer.from(`${MPESA_SHORTCODE}${MPESA_PASSKEY}${timestamp}`).toString("base64");
   const response = await fetch(`${MPESA_API_BASE}/mpesa/stkpush/v1/processrequest`, {
     method: "POST",
