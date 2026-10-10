@@ -113,7 +113,7 @@ async function requestMpesaStkPush({ phone, kesAmount, accountReference, descrip
   if (!MPESA_SHORTCODE || !MPESA_PASSKEY || !MPESA_CALLBACK_URL) {
     throw new Error("MPESA_SHORTCODE, MPESA_PASSKEY, and MPESA_CALLBACK_URL must be configured.");
   }
-  if (!/^https:\\/\\//i.test(MPESA_CALLBACK_URL)) {
+  if (!MPESA_CALLBACK_URL.toLowerCase().startsWith("https://")) {
     throw new Error("MPESA_CALLBACK_URL must be a public HTTPS URL.");
   }
   const accessToken = await getMpesaAccessToken();
